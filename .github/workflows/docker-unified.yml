@@ -1034,6 +1034,7 @@ jobs:
       datahub_version: ${{ needs.setup.outputs.tag }}
       image_version_env: ${{ needs.setup.outputs.image_version_env }}
       image_built_repos: ${{ needs.setup.outputs.image_built_repos }}
+      docker_login: ${{ needs.setup.outputs.docker-login }}
       profile_name: ${{ needs.setup.outputs.smoke_profile_name || 'quickstart-consumers' }}
       send_posthog_metrics: true
     secrets: inherit
