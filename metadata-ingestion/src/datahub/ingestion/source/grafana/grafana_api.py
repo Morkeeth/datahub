@@ -1,7 +1,7 @@
 """API client for Grafana metadata extraction"""
 
 import logging
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Set, Union
 
 import requests
 import urllib3.exceptions
@@ -54,16 +54,47 @@ class GrafanaAPIClient:
         return session
 
     def get_folders(self) -> List[Folder]:
-        """Fetch all folders from Grafana with pagination."""
+        """Fetch all folders from Grafana, including nested subfolders."""
         folders: List[Folder] = []
+        seen_uids: Set[str] = set()
+        # None is the root level; every other entry is a parent whose children
+        # still need fetching.
+        pending: List[Optional[str]] = [None]
+
+        while pending:
+            for folder_data in self._fetch_folder_level(pending.pop()):
+                uid = folder_data.get("uid")
+                if uid is not None:
+                    # A folder reached twice would otherwise be emitted twice,
+                    # and a cycle would not terminate.
+                    if uid in seen_uids:
+                        continue
+                    seen_uids.add(uid)
+                    pending.append(uid)
+                folders.append(Folder.model_validate(folder_data))
+
+        return folders
+
+    def _fetch_folder_level(self, parent_uid: Optional[str]) -> List[Dict]:
+        """Page through /api/folders for a single level of the folder tree.
+
+        Grafana returns only direct children: with no parentUid the response is
+        the root level, so one sweep never sees a subfolder, nor the dashboards
+        inside it.
+        """
+        level: List[Dict] = []
         page = 1
         per_page = self.page_size
 
         while True:
+            params: Dict[str, Union[int, str]] = {"page": page, "limit": per_page}
+            if parent_uid is not None:
+                params["parentUid"] = parent_uid
+
             try:
                 response = self.session.get(
                     f"{self.base_url}/api/folders",
-                    params={"page": page, "limit": per_page},
+                    params=params,
                 )
                 response.raise_for_status()
 
@@ -71,19 +102,19 @@ class GrafanaAPIClient:
                 if not batch:
                     break
 
-                folders.extend(Folder.model_validate(folder) for folder in batch)
+                level.extend(batch)
                 page += 1
             except requests.exceptions.RequestException as e:
                 self.report.failure(
                     title="Folder Fetch Error",
                     message="Failed to fetch folders on page",
-                    context=str(page),
+                    context=f"page={page}, parentUid={parent_uid}",
                     exc=e,
                 )
                 self.report.report_permission_warning()  # Likely a permission issue
                 break
 
-        return folders
+        return level
 
     def get_dashboard(self, uid: str) -> Optional[Dashboard]:
         """Fetch a specific dashboard by UID"""

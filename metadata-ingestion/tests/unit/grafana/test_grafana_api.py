@@ -74,6 +74,67 @@ def test_get_folders_success(api_client, mock_session):
     assert folders[0].title == "Folder 1"
 
 
+def _folder_page(*folders):
+    response = MagicMock()
+    response.json.return_value = list(folders)
+    response.raise_for_status.return_value = None
+    return response
+
+
+def test_get_folders_includes_nested_subfolders(api_client, mock_session):
+    # /api/folders returns one level at a time: the root without parentUid,
+    # then a folder's direct children with it.
+    mock_session.get.side_effect = [
+        _folder_page({"id": "1", "uid": "root-uid", "title": "Root"}),
+        _folder_page(),
+        _folder_page({"id": "2", "uid": "child-uid", "title": "Child"}),
+        _folder_page(),
+        _folder_page({"id": "3", "uid": "grandchild-uid", "title": "Grandchild"}),
+        _folder_page(),
+        _folder_page(),
+    ]
+
+    folders = api_client.get_folders()
+
+    assert {f.title for f in folders} == {"Root", "Child", "Grandchild"}
+    assert all(isinstance(f, Folder) for f in folders)
+
+    parent_uids = [
+        call.kwargs["params"].get("parentUid") for call in mock_session.get.call_args_list
+    ]
+    assert parent_uids[0] is None
+    assert "child-uid" in parent_uids
+
+
+def test_get_folders_does_not_revisit_a_folder(api_client, mock_session):
+    # A folder returned as its own descendant would otherwise recurse forever.
+    mock_session.get.side_effect = [
+        _folder_page({"id": "1", "uid": "a", "title": "A"}),
+        _folder_page(),
+        _folder_page({"id": "1", "uid": "a", "title": "A"}),
+        _folder_page(),
+    ]
+
+    folders = api_client.get_folders()
+
+    assert len(folders) == 1
+
+
+def test_get_folders_keeps_parents_when_a_child_level_fails(api_client, mock_session):
+    # A folder the token cannot read should cost that subtree, not the whole walk.
+    root_page = _folder_page({"id": "1", "uid": "root-uid", "title": "Root"})
+    mock_session.get.side_effect = [
+        root_page,
+        _folder_page(),
+        requests.exceptions.RequestException("403"),
+    ]
+
+    folders = api_client.get_folders()
+
+    assert [f.title for f in folders] == ["Root"]
+    assert len(api_client.report.failures) == 1
+
+
 def test_get_folders_error(api_client, mock_session):
     mock_session.get.side_effect = requests.exceptions.RequestException("API Error")
 
