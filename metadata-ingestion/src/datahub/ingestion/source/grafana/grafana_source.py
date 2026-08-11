@@ -1,5 +1,5 @@
 import logging
-from typing import Iterable, List
+from typing import Dict, Iterable, List, Optional
 
 import requests
 
@@ -215,10 +215,15 @@ class GrafanaSource(StatefulIngestionSourceBase):
         """Enhanced extraction mode - full hierarchy, panels, and lineage"""
         # Process folders first
         with self.report.new_stage(GRAFANA_FOLDER_EXTRACTION):
-            for folder in self.api_client.get_folders():
+            folders = self.api_client.get_folders()
+            # A folder names its parent by uid, but FolderKey is built from id,
+            # so the whole set has to be in hand before any parent can be
+            # resolved. get_folders() already returns every level.
+            folder_id_by_uid = {f.uid: f.id for f in folders if f.uid}
+            for folder in folders:
                 if self.config.folder_pattern.allowed(folder.title):
                     self.report.report_folder_scanned()
-                    yield from self._process_folder(folder)
+                    yield from self._process_folder(folder, folder_id_by_uid)
 
         # Process dashboards
         with self.report.new_stage(GRAFANA_DASHBOARD_EXTRACTION):
@@ -227,7 +232,9 @@ class GrafanaSource(StatefulIngestionSourceBase):
                     self.report.report_dashboard_scanned()
                     yield from self._process_dashboard(dashboard)
 
-    def _process_folder(self, folder: Folder) -> Iterable[MetadataWorkUnit]:
+    def _process_folder(
+        self, folder: Folder, folder_id_by_uid: Optional[Dict[str, str]] = None
+    ) -> Iterable[MetadataWorkUnit]:
         """Process Grafana folder metadata"""
         folder_key = FolderKey(
             platform=self.config.platform,
@@ -235,11 +242,25 @@ class GrafanaSource(StatefulIngestionSourceBase):
             folder_id=folder.id,
         )
 
+        parent_key: Optional[FolderKey] = None
+        if folder.parent_uid and folder_id_by_uid:
+            parent_id = folder_id_by_uid.get(folder.parent_uid)
+            # A parent outside folder_pattern, or one the token cannot read, is
+            # absent from the map. Emitting the subfolder unparented keeps its
+            # dashboards in the catalog rather than dropping the subtree.
+            if parent_id is not None:
+                parent_key = FolderKey(
+                    platform=self.config.platform,
+                    instance=self.config.platform_instance,
+                    folder_id=parent_id,
+                )
+
         yield from gen_containers(
             container_key=folder_key,
             name=folder.title,
             sub_types=[BIContainerSubTypes.LOOKER_FOLDER],
             description=folder.description,
+            parent_container_key=parent_key,
         )
 
     def _process_dashboard(self, dashboard: Dashboard) -> Iterable[MetadataWorkUnit]:

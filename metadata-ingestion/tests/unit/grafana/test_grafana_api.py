@@ -135,6 +135,27 @@ def test_get_folders_keeps_parents_when_a_child_level_fails(api_client, mock_ses
     assert len(api_client.report.failures) == 1
 
 
+def test_folder_model_carries_the_parent_uid(api_client, mock_session):
+    # `parentUid` is what identifies the hierarchy; dropping it at validation
+    # is how the walk found subfolders without being able to place them.
+    mock_session.get.side_effect = [
+        _folder_page(
+            {"id": "1", "uid": "root-uid", "title": "Root"},
+            {"id": "2", "uid": "child-uid", "parentUid": "root-uid", "title": "Child"},
+        ),
+        _folder_page(),
+        _folder_page(),
+        _folder_page(),
+    ]
+
+    folders = api_client.get_folders()
+
+    by_title = {f.title: f for f in folders}
+    assert by_title["Root"].parent_uid is None
+    assert by_title["Child"].parent_uid == "root-uid"
+    assert by_title["Child"].uid == "child-uid"
+
+
 def test_get_folders_error(api_client, mock_session):
     mock_session.get.side_effect = requests.exceptions.RequestException("API Error")
 

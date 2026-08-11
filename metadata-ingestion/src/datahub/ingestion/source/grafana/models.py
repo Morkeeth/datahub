@@ -295,6 +295,10 @@ class Folder(_GrafanaBaseModel):
     """Represents a Grafana folder."""
 
     id: str
+    uid: Optional[str] = None
+    # Grafana identifies a parent by uid, while FolderKey is built from id, so
+    # the source resolves this through a uid-to-id map over the fetched set.
+    parent_uid: Optional[str] = Field(default=None, alias="parentUid")
     title: str
     description: Optional[str] = ""
 
